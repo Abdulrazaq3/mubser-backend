@@ -1,0 +1,38 @@
+# ملفات يجب تجاهلها عند بناء Docker
+
+# Virtual environment
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# Test files
+tests/
+*.test.py
+
+# Documentation
+*.md
+!README.md
+
+# Certificates (development only)
+cert.pem
+key.pem
+
+# Database (سيُنشأ على السيرفر)
+*.db
+
+# Backup files
+*.bak
+*.backup
+
+# Logs
+*.log

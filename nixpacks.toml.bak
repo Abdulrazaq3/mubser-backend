@@ -1,0 +1,31 @@
+# Railway Nixpacks Configuration for Mubser Backend
+# الضبط الأمثل لـ OpenCV-headless و MediaPipe
+
+[phases.setup]
+# مكتبات النظام اللازمة لـ OpenCV و MediaPipe
+nixPkgs = [
+    "python310",
+    "gcc",
+    "stdenv.cc.cc.lib",
+    "zlib",
+    "glib",
+    "mesa",
+    "mesa.drivers",
+    "libGL",
+    "libGLU"
+]
+
+# تعيين متغير LD_LIBRARY_PATH لضمان إيجاد المكتبات
+aptPkgs = [
+    "libgl1-mesa-glx",
+    "libglib2.0-0",
+    "libsm6",
+    "libxext6",
+    "libxrender1"
+]
+
+[phases.install]
+cmds = ["pip install --upgrade pip", "pip install -r requirements.txt"]
+
+[start]
+cmd = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
