@@ -1,5 +1,8 @@
 """
 نموذج التنبؤ بلغة الإشارة العربية باستخدام ONNX Runtime و MediaPipe
+
+✅ تم تحديثه لاستخدام Lazy Loading لتسريع startup السيرفر
+   - cv2, mediapipe, onnxruntime يتم تحميلها عند الحاجة فقط
 """
 import json
 from pathlib import Path
@@ -8,9 +11,7 @@ import logging
 
 import numpy as np
 from PIL import Image
-import cv2
-import mediapipe as mp
-import onnxruntime as ort
+# ✅ تأخير imports الثقيلة - سيتم تحميلها داخل SignLanguagePredictor
 
 # إعداد السجلات
 logging.basicConfig(level=logging.INFO)
@@ -31,6 +32,12 @@ class SignLanguagePredictor:
         """
         تهيئة المتنبئ
         """
+        # ✅ تحميل المكتبات الثقيلة عند الحاجة فقط
+        import onnxruntime as ort
+        import mediapipe as mp
+        self._cv2 = None  # سيتم تحميله عند الحاجة
+        self._mp = mp
+        
         # تحميل الميتاداتا + المابنق
         try:
             with open(metadata_path, "r", encoding="utf-8") as f:
@@ -72,7 +79,15 @@ class SignLanguagePredictor:
         except Exception as e:
             logger.warning(f"⚠️ فشل تهيئة MediaPipe (سيتم استخدام القص المركزي): {e}")
     
+    def _get_cv2(self):
+        """تحميل cv2 عند الحاجة"""
+        if self._cv2 is None:
+            import cv2
+            self._cv2 = cv2
+        return self._cv2
+    
     def detect_hand_box(self, bgr: np.ndarray, pad: int = 20) -> Optional[Tuple[int, int, int, int]]:
+        cv2 = self._get_cv2()
         h, w = bgr.shape[:2]
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         
@@ -101,6 +116,7 @@ class SignLanguagePredictor:
             return None
     
     def crop_hand(self, img_pil: Image.Image, pad: int = 20) -> Image.Image:
+        cv2 = self._get_cv2()
         try:
             bgr = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
             box = self.detect_hand_box(bgr, pad=pad)
@@ -147,17 +163,43 @@ class SignLanguagePredictor:
             self.mp_hands.close()
 
 
-# ====== إنشاء كائن عام للاستخدام ======
-try:
-    predictor = SignLanguagePredictor()
-except Exception as e:
-    logger.error(f"❌ فشل تهيئة المتنبئ: {e}")
-    predictor = None
+# ====== Lazy Loading Pattern ======
+_predictor = None
+_predictor_loading = False
+
+
+def get_predictor():
+    """تحميل المتنبئ عند الحاجة فقط (Lazy Loading)"""
+    global _predictor, _predictor_loading
+    
+    if _predictor is not None:
+        return _predictor
+    
+    if _predictor_loading:
+        # منع التحميل المتزامن
+        import time
+        while _predictor_loading and _predictor is None:
+            time.sleep(0.1)
+        return _predictor
+    
+    try:
+        _predictor_loading = True
+        logger.info("🔄 جاري تحميل نموذج الحروف (Lazy Loading)...")
+        _predictor = SignLanguagePredictor()
+        logger.info("✅ تم تحميل نموذج الحروف بنجاح")
+    except Exception as e:
+        logger.error(f"❌ فشل تهيئة المتنبئ: {e}")
+        _predictor = None
+    finally:
+        _predictor_loading = False
+    
+    return _predictor
 
 
 # ====== دوال توافق مع الكود القديم ======
 
 def predict(image_path: str) -> Tuple[str, float]:
+    predictor = get_predictor()
     if predictor is None:
         raise RuntimeError("المتنبئ غير متاح")
     label, confidence, _ = predictor.predict(image_path)
@@ -178,7 +220,9 @@ def dummy_extract_text(image_path: str) -> str:
 
 
 def get_top_predictions(image_path: str, top_k: int = 5) -> List[Tuple[str, float]]:
+    predictor = get_predictor()
     if predictor is None:
         raise RuntimeError("المتنبئ غير متاح")
     _, _, top_k_preds = predictor.predict(image_path, top_k=top_k)
     return top_k_preds
+

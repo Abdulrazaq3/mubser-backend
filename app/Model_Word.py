@@ -5,6 +5,8 @@
 - الميتاداتا: Mubser_model_89cls_64.meta.json
 - إدخال: صورة واحدة (PIL.Image أو مسار)
 - إخراج: (label, confidence, top_k_list)
+
+✅ تم تحديثه لاستخدام Lazy Loading لتسريع startup السيرفر
 """
 
 from typing import Tuple, List, Optional, Union
@@ -15,9 +17,6 @@ import atexit
 
 import numpy as np
 from PIL import Image
-import cv2
-import mediapipe as mp
-import onnxruntime as ort
 
 # ================= إعداد السجلات =================
 logging.basicConfig(level=logging.INFO)
@@ -27,42 +26,100 @@ logger = logging.getLogger("Model_Word")
 MODEL_PATH = Path("Mubser_model_89cls_64.onnx")
 META_PATH  = Path("Mubser_model_89cls_64.meta.json")
 
-# ================= تحميل الميتاداتا =================
-try:
-    with META_PATH.open("r", encoding="utf-8") as f:
-        _meta = json.load(f)
-    CLASSES: List[str] = _meta["classes"]
-    IMG_SIZE: int = int(_meta.get("img_size", 64))
-    # اختياري: تطبيع (إذا موجود في الميتاداتا)
-    _norm = _meta.get("normalize") or {}
-    NORM_MEAN: Optional[List[float]] = _norm.get("mean")
-    NORM_STD: Optional[List[float]] = _norm.get("std")
-    # اختياري: mapping (إن وُجد) لتحويل اللابل لعرض عربي/إنجليزي
-    LABEL_MAPPING: Optional[dict] = _meta.get("mapping")
-    logger.info(f"✅ Loaded meta: {len(CLASSES)} classes, img_size={IMG_SIZE}")
-except Exception as e:
-    logger.error(f"❌ Failed to load meta '{META_PATH}': {e}")
-    raise
+# ================= متغيرات Lazy Loading =================
+_meta_loaded = False
+_session_loaded = False
+_holistic_loaded = False
 
+CLASSES: List[str] = []
+IMG_SIZE: int = 64
+NORM_MEAN: Optional[List[float]] = None
+NORM_STD: Optional[List[float]] = None
+LABEL_MAPPING: Optional[dict] = None
 
-# ================= تهيئة MediaPipe Holistic (وضع fail-safe) =================
-mp_holistic = None
+_session = None
+_input_name = None
+_output_name = None
 _holistic = None
+mp_holistic = None
 
-try:
-    if hasattr(mp, 'solutions'):
-        mp_holistic = mp.solutions.holistic
-        _holistic = mp_holistic.Holistic(
-            static_image_mode=True,
-            model_complexity=1,
-            refine_face_landmarks=False,
-            min_detection_confidence=0.6
-        )
-        logger.info("✅ MediaPipe Holistic initialized successfully")
-    else:
-        logger.warning("⚠️ MediaPipe solutions not found (Check Python version/Installation)")
-except Exception as e:
-    logger.warning(f"⚠️ Failed to initialize MediaPipe: {e}")
+
+def _load_metadata():
+    """تحميل الميتاداتا عند الحاجة"""
+    global _meta_loaded, CLASSES, IMG_SIZE, NORM_MEAN, NORM_STD, LABEL_MAPPING
+    
+    if _meta_loaded:
+        return True
+    
+    try:
+        logger.info("🔄 جاري تحميل الميتاداتا...")
+        with META_PATH.open("r", encoding="utf-8") as f:
+            _meta = json.load(f)
+        CLASSES = _meta["classes"]
+        IMG_SIZE = int(_meta.get("img_size", 64))
+        _norm = _meta.get("normalize") or {}
+        NORM_MEAN = _norm.get("mean")
+        NORM_STD = _norm.get("std")
+        LABEL_MAPPING = _meta.get("mapping")
+        logger.info(f"✅ Loaded meta: {len(CLASSES)} classes, img_size={IMG_SIZE}")
+        _meta_loaded = True
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to load meta '{META_PATH}': {e}")
+        return False
+
+
+def _load_onnx_session():
+    """تحميل ONNX Session عند الحاجة"""
+    global _session_loaded, _session, _input_name, _output_name
+    
+    if _session_loaded:
+        return True
+    
+    try:
+        logger.info("🔄 جاري تحميل نموذج الكلمات ONNX...")
+        import onnxruntime as ort
+        _session = ort.InferenceSession(str(MODEL_PATH), providers=["CPUExecutionProvider"])
+        _input_name = _session.get_inputs()[0].name
+        _output_name = _session.get_outputs()[0].name
+        logger.info("✅ ONNX session initialized (CPUExecutionProvider)")
+        _session_loaded = True
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize ONNX session: {e}")
+        return False
+
+
+def _load_holistic():
+    """تحميل MediaPipe Holistic عند الحاجة"""
+    global _holistic_loaded, _holistic, mp_holistic
+    
+    if _holistic_loaded:
+        return _holistic is not None
+    
+    try:
+        logger.info("🔄 جاري تحميل MediaPipe Holistic...")
+        import mediapipe as mp
+        if hasattr(mp, 'solutions'):
+            mp_holistic = mp.solutions.holistic
+            _holistic = mp_holistic.Holistic(
+                static_image_mode=True,
+                model_complexity=1,
+                refine_face_landmarks=False,
+                min_detection_confidence=0.6
+            )
+            logger.info("✅ MediaPipe Holistic initialized successfully")
+            _holistic_loaded = True
+            return True
+        else:
+            logger.warning("⚠️ MediaPipe solutions not found")
+            _holistic_loaded = True
+            return False
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to initialize MediaPipe: {e}")
+        _holistic_loaded = True
+        return False
+
 
 def _close_holistic():
     try:
@@ -70,19 +127,18 @@ def _close_holistic():
             _holistic.close()
     except Exception:
         pass
+
 atexit.register(_close_holistic)
 
 
+def _ensure_loaded():
+    """التأكد من تحميل كل المكونات"""
+    if not _load_metadata():
+        raise RuntimeError("فشل تحميل الميتاداتا")
+    if not _load_onnx_session():
+        raise RuntimeError("فشل تحميل نموذج ONNX")
+    _load_holistic()  # اختياري - لا نفشل إذا فشل
 
-# ================= تهيئة ONNX Runtime =================
-try:
-    _session = ort.InferenceSession(str(MODEL_PATH), providers=["CPUExecutionProvider"])
-    _input_name = _session.get_inputs()[0].name
-    _output_name = _session.get_outputs()[0].name
-    logger.info("✅ ONNX session initialized (CPUExecutionProvider)")
-except Exception as e:
-    logger.error(f"❌ Failed to initialize ONNX session: {e}")
-    raise
 
 # =====================================================
 #                وظائف المعالجة/التنبؤ
@@ -92,6 +148,11 @@ def crop_holistic_union_pil(img_pil: Image.Image, pad: int = 20, max_size: int =
     """
     يقصّ مستطيلاً واحدًا يضم اليدين + الوجه + الجسم
     """
+    import cv2
+    
+    # التأكد من تحميل MediaPipe
+    _load_holistic()
+    
     if _holistic is None:
         # Fallback مباشر للقص المركزي إذا لم يعمل MediaPipe
         bgr = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
@@ -176,6 +237,7 @@ def crop_holistic_union_pil(img_pil: Image.Image, pad: int = 20, max_size: int =
         # fallback آمن
         return img_pil.resize((IMG_SIZE, IMG_SIZE))
 
+
 def _apply_optional_normalize(x: np.ndarray) -> np.ndarray:
     """
     يطبّق Normalize (اختياري) إذا تم تعريفه في الميتاداتا
@@ -187,10 +249,14 @@ def _apply_optional_normalize(x: np.ndarray) -> np.ndarray:
         x = (x - mean) / std
     return x
 
+
 def preprocess_pil(img_pil: Image.Image, enhance: bool = True) -> np.ndarray:
     """
     pipeline معالجة محسّن
     """
+    # التأكد من تحميل الميتاداتا
+    _load_metadata()
+    
     # 1. قص
     img_pil = crop_holistic_union_pil(img_pil, pad=20)
 
@@ -220,16 +286,21 @@ def preprocess_pil(img_pil: Image.Image, enhance: bool = True) -> np.ndarray:
     x = x[None, None, :, :]
     return x
 
+
 def _softmax(z: np.ndarray) -> np.ndarray:
     z = z - np.max(z)
     ez = np.exp(z)
     return ez / np.sum(ez)
+
 
 def predict_word_from_pil(img_pil: Image.Image, top_k: int = 5) -> Tuple[str, float, List[Tuple[str, float]]]:
     """
     تنبؤ من PIL.Image
     يرجّع: (label, confidence, top_k_list)
     """
+    # ✅ التأكد من تحميل كل المكونات (Lazy Loading)
+    _ensure_loaded()
+    
     # تحضير الإدخال
     x = preprocess_pil(img_pil)
 
@@ -263,10 +334,13 @@ def predict_word_from_pil(img_pil: Image.Image, top_k: int = 5) -> Tuple[str, fl
 
     return top_label, top_conf, top_k_list
 
+
 def check_image_quality(img_pil: Image.Image) -> bool:
     """
     فحص جودة الصورة قبل المعالجة
     """
+    import cv2
+    
     w, h = img_pil.size
     
     # 1. حجم أدنى
@@ -284,6 +358,7 @@ def check_image_quality(img_pil: Image.Image) -> bool:
     
     return True
 
+
 def predict_word(image: Union[str, Path, Image.Image], top_k: int = 5) -> Tuple[str, float, List[Tuple[str, float]]]:
     """
     تنبؤ مع فحص الجودة
@@ -300,6 +375,7 @@ def predict_word(image: Union[str, Path, Image.Image], top_k: int = 5) -> Tuple[
         logger.warning("⚠️ جودة الصورة منخفضة - النتيجة قد لا تكون دقيقة")
     
     return predict_word_from_pil(img_pil, top_k=top_k)
+
 
 def predict_word_with_tta(
     img_pil: Image.Image, 
@@ -341,6 +417,7 @@ def predict_word_with_tta(
     top_k_list = [(lbl, conf / len(predictions)) for lbl, conf in sorted_labels]
     
     return best_label, avg_conf, top_k_list
+
 
 # اختياري: دالة بسيطة تُرجع نصاً فقط (للتوافق مع بعض الواجهات)
 def dummy_extract_text(image: Union[str, Path, Image.Image]) -> str:
