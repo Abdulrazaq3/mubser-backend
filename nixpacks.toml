@@ -1,14 +1,22 @@
 # Railway Nixpacks Configuration
-# إعداد مكتبات النظام لـ OpenCV و MediaPipe
+# إضافة مكتبات OpenGL لـ OpenCV
 
 [phases.setup]
-nixPkgs = ["python310"]
+nixPkgs = [
+    "python310",
+    "mesa",
+    "libGL",
+    "glib"
+]
 
-# مهم جداً: إضافة مكتبات النظام عبر apt
-aptPkgs = ["libgl1-mesa-glx", "libglib2.0-0", "libsm6", "libxext6", "libxrender1"]
+# إضافة مكتبات إضافية عبر setup commands
+cmds = [
+    "apt-get update || true",
+    "apt-get install -y libgl1-mesa-glx libglib2.0-0 || true"
+]
 
 [phases.install]
-cmds = ["pip install --upgrade pip", "pip install -r requirements.txt"]
+cmds = ["pip install -r requirements.txt"]
 
 [start]
 cmd = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
