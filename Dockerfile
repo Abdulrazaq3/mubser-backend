@@ -26,11 +26,14 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # نسخ كافة ملفات التطبيق
 COPY . .
 
-# إنشاء مجلد الرفع
-RUN mkdir -p uploads
+# إنشاء مجلد الرفع + جعل السكربت قابل للتنفيذ
+RUN mkdir -p uploads && chmod +x start.sh
 
 # تعريض المنفذ
 EXPOSE 8000
 
-# أمر التشغيل - Railway يمرر PORT كمتغير بيئة
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# تعيين PORT افتراضي (Railway سيتجاوزه)
+ENV PORT=8000
+
+# أمر التشغيل باستخدام السكربت
+CMD ["./start.sh"]
