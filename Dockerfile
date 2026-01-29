@@ -33,4 +33,4 @@ RUN mkdir -p uploads
 EXPOSE 8000
 
 # أمر التشغيل - Railway يمرر PORT كمتغير بيئة
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
